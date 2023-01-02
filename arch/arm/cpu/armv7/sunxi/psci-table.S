@@ -19,6 +19,7 @@
 #include <linux/linkage.h>
 #include <asm/macro.h>
 #include <asm/psci.h>
+#include <asm/arch/psci.h>
 
 	.pushsection ._secure.text, "ax"
 
@@ -27,7 +28,7 @@
 	.align	5
 
 psci_platform_table:
-	.word	0x83000033
+	.word	SUNXI_PSCI_DRAM_DVFS_REQ
 	.word	sunxi_dram_dvfs_req
 	.word	0
 	.word	0
