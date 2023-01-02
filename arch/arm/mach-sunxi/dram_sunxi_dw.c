@@ -470,11 +470,6 @@ static void mctl_sys_init(uint16_t socid, struct dram_para *para)
 	udelay(500);
 }
 
-/* These are more guessed based on some Allwinner code. */
-#define DX_GCR_ODT_DYNAMIC	(0x0 << 4)
-#define DX_GCR_ODT_ALWAYS_ON	(0x1 << 4)
-#define DX_GCR_ODT_OFF		(0x2 << 4)
-
 static int mctl_channel_init(uint16_t socid, struct dram_para *para)
 {
 	struct sunxi_mctl_com_reg * const mctl_com =
