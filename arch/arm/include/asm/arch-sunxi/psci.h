@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __ARM_PSCI_H__
-#define __ARM_PSCI_H__
+#ifndef __ARM_SUNXI_PSCI_H__
+#define __ARM_SUNXI_PSCI_H__
 
 #include <asm/psci.h>
 
@@ -35,4 +35,4 @@
 #include <linux/bitops.h>
 #endif /* ! __ASSEMBLY__ */
 
-#endif /* __ARM_PSCI_H__ */
+#endif /* __ARM_SUNXI_PSCI_H__ */
