@@ -13,14 +13,19 @@
 #include <asm/arch/cpu.h>
 #include <asm/arch/cpucfg.h>
 #include <asm/arch/prcm.h>
+#include <asm/arch/clock.h>
+#include <asm/arch/dram.h>
 #include <asm/armv7.h>
 #include <asm/gic.h>
 #include <asm/io.h>
+#include <asm/gpio.h>
 #include <asm/psci.h>
 #include <asm/secure.h>
 #include <asm/system.h>
 
 #include <linux/bitops.h>
+
+#define USE_LOCKING_BEFORE_DDRFRQ	1
 
 #define __irq		__attribute__ ((interrupt ("IRQ")))
 
@@ -37,6 +42,8 @@
 #define SUN8I_R40_PWROFF			(0x110)
 #define SUN8I_R40_PWR_CLAMP(cpu)		(0x120 + (cpu) * 0x4)
 #define SUN8I_R40_SRAMC_SOFT_ENTRY_REG0		(0xbc)
+
+static volatile bool cpu_lock_state[4] __secure_data = { 0 };
 
 static void __secure cp15_write_cntp_tval(u32 tval)
 {
@@ -58,6 +65,24 @@ static u32 __secure cp15_read_cntp_ctl(void)
 }
 
 #define ONE_MS (CONFIG_COUNTER_FREQUENCY / 1000)
+#define ONE_US (CONFIG_COUNTER_FREQUENCY / 1000000)
+
+static void __secure __udelay(u32 us)
+{
+	u32 reg = ONE_US * us;
+
+	cp15_write_cntp_tval(reg);
+	isb();
+	cp15_write_cntp_ctl(3);
+
+	do {
+		isb();
+		reg = cp15_read_cntp_ctl();
+	} while (!(reg & BIT(2)));
+
+	cp15_write_cntp_ctl(0);
+	isb();
+}
 
 static void __secure __mdelay(u32 ms)
 {
@@ -207,6 +232,53 @@ static void __secure cp15_write_scr(u32 scr)
 	isb();
 }
 
+static int __secure sunxi_gpio_output(u32 pin, u32 val)
+{
+	u32 dat;
+	u32 bank = GPIO_BANK(pin);
+	u32 num = GPIO_NUM(pin);
+	struct sunxi_gpio *pio = BANK_TO_GPIO(bank);
+
+	dat = readl(&pio->dat);
+	if (val)
+		dat |= 0x1 << num;
+	else
+		dat &= ~(0x1 << num);
+
+	writel(dat, &pio->dat);
+
+	return 0;
+}
+
+static bool __secure is_all_secondary_cpu_locked() {
+	int i;
+	dsb();
+	psci_v7_flush_dcache_all();
+	for (i = 0; i < 4; i++) {
+		if (cpu_lock_state[i])
+			return false;
+	}
+	return true;
+}
+
+static bool __secure is_all_secondary_cpu_unlocked() {
+	int i;
+	dsb();
+	psci_v7_flush_dcache_all();
+	for (i = 0; i < 4; i++) {
+		if (cpu_lock_state[i])
+			return false;
+	}
+	return true;
+}
+
+void __secure __gpio_debug(u32 v) {
+	sunxi_gpio_output(SUNXI_GPA(9), v & 1);
+	sunxi_gpio_output(SUNXI_GPA(10), (v >> 1) & 1);
+	sunxi_gpio_output(SUNXI_GPA(20), (v >> 2) & 1);
+	sunxi_gpio_output(SUNXI_GPA(15), (v >> 3) & 1);
+}
+
 /*
  * Although this is an FIQ handler, the FIQ is processed in monitor mode,
  * which means there's no FIQ banked registers. This is the same as IRQ
@@ -215,7 +287,7 @@ static void __secure cp15_write_scr(u32 scr)
  */
 void __secure __irq psci_fiq_enter(void)
 {
-	u32 scr, reg, cpu;
+	u32 scr, reg, cpu, irqn;
 
 	/* Switch to secure mode */
 	scr = cp15_read_scr();
@@ -223,20 +295,40 @@ void __secure __irq psci_fiq_enter(void)
 
 	/* Validate reason based on IAR and acknowledge */
 	reg = readl(GICC_BASE + GICC_IAR);
+	irqn = reg & 0x3FF;
 
 	/* Skip spurious interrupts 1022 and 1023 */
 	if (reg == 1023 || reg == 1022)
 		goto out;
 
-	/* End of interrupt */
-	writel(reg, GICC_BASE + GICC_EOIR);
-	dsb();
-
 	/* Get CPU number */
 	cpu = (reg >> 10) & 0x7;
 
-	/* Power off the CPU */
-	sunxi_cpu_power_off(cpu);
+	switch (irqn) {
+		case 14:
+			cpu_lock_state[psci_get_cpu_id()] = true;
+			while (cpu_lock_state[cpu]) {
+				dsb();
+				psci_v7_flush_dcache_all();
+			}
+			cpu_lock_state[psci_get_cpu_id()] = false;
+			dsb();
+			psci_v7_flush_dcache_all();
+			
+			/* End of interrupt */
+			writel(reg, GICC_BASE + GICC_EOIR);
+			dsb();
+		break;
+		
+		case 15:
+			/* End of interrupt */
+			writel(reg, GICC_BASE + GICC_EOIR);
+			dsb();
+
+			/* Power off the CPU */
+			sunxi_cpu_power_off(cpu);
+		break;
+	}
 
 out:
 	/* Restore security level */
@@ -294,10 +386,11 @@ void __secure psci_arch_init(void)
 {
 	u32 reg;
 
-	/* SGI15 as Group-0 */
-	clrbits_le32(GICD_BASE + GICD_IGROUPRn, BIT(15));
+	/* SGI14 & SGI15 as Group-0 */
+	clrbits_le32(GICD_BASE + GICD_IGROUPRn, BIT(14) | BIT(15));
 
-	/* Set SGI15 priority to 0 */
+	/* Set SGI14 & SGI15 priority to 0 */
+	writeb(0, GICD_BASE + GICD_IPRIORITYRn + 14);
 	writeb(0, GICD_BASE + GICD_IPRIORITYRn + 15);
 
 	/* Be cool with non-secure */
@@ -310,4 +403,132 @@ void __secure psci_arch_init(void)
 	reg |= BIT(2);  /* Enable FIQ in monitor mode */
 	reg &= ~BIT(0); /* Secure mode */
 	cp15_write_scr(reg);
+}
+
+#define MCTL_COM_BASE               ((void *)(0x1c62000))
+#define MCTL_CTL_BASE               ((void *)(0x1c63000))
+
+#define _CCM_PLL_DDR_REG            (CCM_PLL_BASE  +  0x20)
+#define MC_WORK_MODE                (MCTL_COM_BASE +  0x00)
+#define PIR                         (MCTL_CTL_BASE +  0x00)
+#define PWRCTL                      (MCTL_CTL_BASE +  0x04)
+#define PGSR0                       (MCTL_CTL_BASE +  0x10)
+#define STATR                       (MCTL_CTL_BASE +  0x18)
+#define DTCR                        (MCTL_CTL_BASE +  0xc0)
+#define ODTMAP                      (MCTL_CTL_BASE + 0x120)
+#define DXnGCR0(x)                  (MCTL_CTL_BASE + 0x344 + 0x80*(x))
+
+s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
+				 u32 __always_unused freq, u32 flags)
+{
+	u32 rank_num, reg_val, cpu_mask = 0;
+	unsigned int i = 0;
+
+#ifdef USE_LOCKING_BEFORE_DDRFRQ
+	__gpio_debug(0);
+
+	cpu_lock_state[psci_get_cpu_id()] = true;
+
+	// Put all other CPU's into secure mode
+	for (i = 0; i < 4; i++) {
+		cpu_lock_state[i] = false;
+		if (psci_get_cpu_id() != i)
+			cpu_mask |= 1 << i;
+	}
+	writel((cpu_mask << 16) | 14, GICD_BASE + GICD_SGIR);
+	dsb();
+	
+__gpio_debug(0b101);
+	while (!is_all_secondary_cpu_locked());
+__gpio_debug(0);
+#endif
+
+	rank_num = readl(MC_WORK_MODE) & 0x1;
+
+	/* 1. enter self-refresh and disable all master access */
+	reg_val = readl(PWRCTL);
+	reg_val |= (0x1<<0);
+	reg_val |= (0x1<<8);
+__gpio_debug(0b1000);
+	psci_v7_flush_dcache_all();
+	writel(reg_val, PWRCTL);
+	__udelay(1);
+__gpio_debug(0);
+
+__gpio_debug(0b100);
+	/* make sure enter self-refresh */
+	while ((readl(STATR) & 0x7) != 0x3)
+		;
+__gpio_debug(0);
+
+	/* 2.Update PLL setting and wait 1ms */
+	reg_val = readl(SUNXI_CCM_BASE + 0x20);
+	reg_val |= (1U << 20);
+	writel(reg_val, SUNXI_CCM_BASE + 0x20);
+	__udelay(1000);
+
+	/* 3.set PIR register issue phy reset and DDL calibration */
+	if (rank_num) {
+		reg_val = readl(DTCR);
+		reg_val &= ~(0x3<<24);
+		reg_val |= (0x3<<24);
+		writel(reg_val, DTCR);
+	} else {
+		reg_val = readl(DTCR);
+		reg_val &= ~(0x3<<24);
+		reg_val |= (0x1<<24);
+		writel(reg_val, DTCR);
+	}
+
+	/* trigger phy reset and DDL calibration */
+	writel(0x40000061, PIR);
+	/* add 1us delay here */
+	__udelay(1);
+
+__gpio_debug(0b001);
+	/* wait for DLL Lock */
+	while ((readl(PGSR0) & 0x1) != 0x1)
+		;
+__gpio_debug(0);
+
+	/*4.setting ODT configure */
+	if (!(flags & BIT(0))) {
+		/* turn off DRAMC ODT */
+		for (i = 0; i < 4; i++) {
+			reg_val = readl(DXnGCR0(i));
+			reg_val &= ~(0x3U<<4);
+			reg_val |= (0x2<<4);
+			writel(reg_val, DXnGCR0(i));
+		}
+	} else {
+		/* turn on DRAMC dynamic ODT */
+		for (i = 0; i < 4; i++) {
+			reg_val = readl(DXnGCR0(i));
+			reg_val &= ~(0x3U<<4);
+			writel(reg_val, DXnGCR0(i));
+		}
+	}
+
+	/* 5.exit self-refresh and enable all master access */
+	reg_val = readl(PWRCTL);
+	reg_val &= ~(0x1<<0);
+	reg_val &= ~(0x1<<8);
+	writel(reg_val, PWRCTL);
+	__udelay(1);
+
+__gpio_debug(0b1000);
+	/* make sure exit self-refresh */
+	while ((readl(STATR) & 0x7) != 0x1)
+__gpio_debug(0);
+		;
+	
+#ifdef USE_LOCKING_BEFORE_DDRFRQ
+	cpu_lock_state[psci_get_cpu_id()] = false;
+
+__gpio_debug(0b111);
+	while (!is_all_secondary_cpu_unlocked());
+__gpio_debug(0);
+#endif
+	
+	return 0;
 }

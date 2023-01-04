@@ -148,6 +148,8 @@ _psci_table:
 	.word	psi_stat_residency
 	.word	ARM_PSCI_1_0_FN_STAT_COUNT
 	.word	psci_stat_count
+	.word	0x83000033
+	.word	sunxi_dram_dvfs_req
 	.word	0
 	.word	0
 
