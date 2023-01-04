@@ -255,7 +255,7 @@ static bool __secure is_all_secondary_cpu_locked() {
 	dsb();
 	psci_v7_flush_dcache_all();
 	for (i = 0; i < 4; i++) {
-		if (cpu_lock_state[i])
+		if (!cpu_lock_state[i])
 			return false;
 	}
 	return true;
@@ -431,15 +431,25 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 
 	// Put all other CPU's into secure mode
 	for (i = 0; i < 4; i++) {
-		cpu_lock_state[i] = false;
-		if (psci_get_cpu_id() != i)
+		if (psci_get_cpu_id() != i) {
 			cpu_mask |= 1 << i;
+			cpu_lock_state[i] = false;
+		}
 	}
 	writel((cpu_mask << 16) | 14, GICD_BASE + GICD_SGIR);
 	dsb();
 	
 __gpio_debug(0b101);
-	while (!is_all_secondary_cpu_locked());
+	while (!is_all_secondary_cpu_locked()) {
+		/*
+		__gpio_debug((
+			((cpu_lock_state[0] ? 1 : 0) << 0) |
+			((cpu_lock_state[1] ? 1 : 0) << 1) |
+			((cpu_lock_state[2] ? 1 : 0) << 2) |
+			((cpu_lock_state[3] ? 1 : 0) << 3)
+		));
+		*/
+	}
 __gpio_debug(0);
 #endif
 
