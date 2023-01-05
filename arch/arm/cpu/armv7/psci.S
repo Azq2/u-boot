@@ -151,6 +151,16 @@ _psci_table:
 	.word	0
 	.word	0
 
+@ This table can be overriden in the platform specific code
+psci_platform_table:
+	.word	0
+	.word	0
+.weak psci_platform_table
+
+@ Actual pointer of platform-specific psci table
+_psci_platform_table_ptr:
+	.word psci_platform_table
+
 _smc_psci:
 	push	{r4-r7,lr}
 
@@ -160,20 +170,34 @@ _smc_psci:
 	mcr	p15, 0, r4, c1, c1, 0
 	isb
 
+	@ Search PSCI function in the main table
 	adr	r4, _psci_table
 1:	ldr	r5, [r4]		@ Load PSCI function ID
 	ldr	r6, [r4, #4]		@ Load target PC
-	cmp	r5, #0			@ If reach the end, bail out
-	moveq	r0, #ARM_PSCI_RET_INVAL	@ Return -2 (Invalid)
+	cmp	r5, #0			@ If reach the end, try platform table
 	beq	2f
 	cmp	r0, r5			@ If not matching, try next entry
 	addne	r4, r4, #8
 	bne	1b
 
-	blx	r6			@ Execute PSCI function
+	b 4f				@ Jump to execute PSCI function
+
+	@ Search PSCI function in the platform table
+2:	adr	r4, _psci_platform_table_ptr
+	ldr	r4, [r4]
+3:	ldr	r5, [r4]		@ Load PSCI function ID
+	ldr	r6, [r4, #4]		@ Load target PC
+	cmp	r5, #0			@ If reach the end, bail out
+	moveq	r0, #ARM_PSCI_RET_INVAL	@ Return -2 (Invalid)
+	beq	5f
+	cmp	r0, r5			@ If not matching, try next entry
+	addne	r4, r4, #8
+	bne	3b
+
+4:	blx	r6			@ Execute PSCI function
 
 	@ Switch back to non-secure
-2:	mcr	p15, 0, r7, c1, c1, 0
+5:	mcr	p15, 0, r7, c1, c1, 0
 
 	pop	{r4-r7, lr}
 	movs	pc, lr			@ Return to the kernel
