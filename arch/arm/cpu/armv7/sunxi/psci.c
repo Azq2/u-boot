@@ -13,6 +13,8 @@
 #include <asm/arch/cpu.h>
 #include <asm/arch/cpucfg.h>
 #include <asm/arch/prcm.h>
+#include <asm/arch/clock.h>
+#include <asm/arch/dram.h>
 #include <asm/armv7.h>
 #include <asm/gic.h>
 #include <asm/io.h>
@@ -58,6 +60,24 @@ static u32 __secure cp15_read_cntp_ctl(void)
 }
 
 #define ONE_MS (CONFIG_COUNTER_FREQUENCY / 1000)
+#define ONE_US (CONFIG_COUNTER_FREQUENCY / 1000000)
+
+static void __secure __udelay(u32 us)
+{
+	u32 reg = ONE_US * us;
+
+	cp15_write_cntp_tval(reg);
+	isb();
+	cp15_write_cntp_ctl(3);
+
+	do {
+		isb();
+		reg = cp15_read_cntp_ctl();
+	} while (!(reg & BIT(2)));
+
+	cp15_write_cntp_ctl(0);
+	isb();
+}
 
 static void __secure __mdelay(u32 ms)
 {
@@ -311,3 +331,81 @@ void __secure psci_arch_init(void)
 	reg &= ~BIT(0); /* Secure mode */
 	cp15_write_scr(reg);
 }
+
+#define DRAM_DVFS_FLAG_ODT				BIT(0)
+#define DRAM_DVFS_FLAG_SELF_REFRESH		BIT(1)
+
+#if defined(CONFIG_MACH_SUN8I_H3)
+s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
+				 u32 __always_unused freq, u32 flags)
+{
+	u32 dual_rank, odtmap, dxodt, i;
+
+	struct sunxi_mctl_com_reg * const mctl_com =
+			(struct sunxi_mctl_com_reg *)SUNXI_DRAM_COM_BASE;
+	struct sunxi_mctl_ctl_reg * const mctl_ctl =
+			(struct sunxi_mctl_ctl_reg *)SUNXI_DRAM_CTL0_BASE;
+	struct sunxi_ccm_reg * const ccm =
+			(struct sunxi_ccm_reg *)SUNXI_CCM_BASE;
+
+	dual_rank = readl(&mctl_com->cr) & MCTL_CR_DUAL_RANK;
+	odtmap = dual_rank ? 0x00000303 : 0x00000201;
+
+	/* 1. Enable self-refresh and disable DRAM port */
+	psci_v7_flush_dcache_all(); /* Make sure no DRAM access after PORT_DIS */
+	setbits_le32(&mctl_ctl->pwrctl, PWRCTL_SELFREF_EN | PWRCTL_PORT_DIS);
+	__udelay(1);
+
+	/* 2. Make sure enter self-refresh */
+	while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_SELFREF);
+
+	/* 3. Update PLL setting and wait PLL lock */
+	setbits_le32(&ccm->pll5_cfg, CCM_PLL5_CTRL_UPD);
+	__udelay(1000);
+
+	/* 4. Set PIR register issue phy reset and DDL calibration */
+	clrsetbits_le32(&mctl_ctl->dtcr, (0x3 << 24), ((dual_rank ? 0x3 : 0x1) << 24));
+
+	/* 5. Trigger phy reset and DDL calibration */
+	writel(PIR_ZCALBYP | PIR_PHYRST | PIR_DCAL | PIR_INIT, &mctl_ctl->pir);
+	__udelay(1);
+
+	/* 6. Wait for DLL Lock */
+	while (!(readl(&mctl_ctl->pgsr[0]) & PGSR_INIT_DONE));
+
+	/* 7. Turn ON or OFF ODT */
+	if ((flags & DRAM_DVFS_FLAG_ODT)) {
+		dxodt = DX_GCR_ODT_DYNAMIC;
+		writel(odtmap, &mctl_ctl->odtmap);
+	} else {
+		dxodt = DX_GCR_ODT_DISABLED;
+		writel(0, &mctl_ctl->odtmap);
+	}
+	for (i = 0; i < 4; i++)
+		clrsetbits_le32(&mctl_ctl->dx[i].gcr, DX_GCR_ODT_MASK, dxodt);
+
+	/* 8. Exit self-refresh (if not needed) and enable DRAM port */
+	if ((flags & DRAM_DVFS_FLAG_SELF_REFRESH)) {
+		clrbits_le32(&mctl_ctl->pwrctl, PWRCTL_PORT_DIS);
+		__udelay(1);
+
+		/* 9. Make sure still in self-refresh */
+		while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_SELFREF);
+	} else {
+		clrbits_le32(&mctl_ctl->pwrctl, PWRCTL_PORT_DIS | PWRCTL_SELFREF_EN);
+		__udelay(1);
+
+		/* 9. Make sure exit self-refresh */
+		while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_NORMAL);
+	}
+
+	return 0;
+}
+#else
+s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
+				 u32 __always_unused freq, u32 __always_unused flags)
+{
+	// Not supported for this CPU
+	return ARM_PSCI_RET_INVAL;
+}
+#endif

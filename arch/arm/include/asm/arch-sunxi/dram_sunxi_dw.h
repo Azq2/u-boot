@@ -182,6 +182,7 @@ struct sunxi_mctl_ctl_reg {
 #define RFSHTMG_TREFI(x)	((x) << 16)
 #define RFSHTMG_TRFC(x)		((x) <<  0)
 
+#define PIR_ZCALBYP	(0x1 << 30) /* Impedance Calibration Bypass */
 #define PIR_CLRSR	(0x1 << 27)	/* clear status registers */
 #define PIR_QSGATE	(0x1 << 10)	/* Read DQS gate training */
 #define PIR_DRAMINIT	(0x1 << 8)	/* DRAM initialization */
@@ -198,6 +199,13 @@ struct sunxi_mctl_ctl_reg {
 
 #define ACBDLR_WRITE_DELAY(x)	((x) << 8)
 
+#define DX_GCR_ODT_MASK			(0x3 << 4)
+#define DX_GCR_ODT_DISABLED		(0x0 << 4)
+#define DX_GCR_ODT_DYNAMIC		(0x0 << 4)
+#define DX_GCR_ODT_ALWAYS_ON	(0x1 << 4)
+#define DX_GCR_ODT_OFF			(0x2 << 4)
+#define DX_GCR_EN				(0x1 << 0)
+
 #define DXBDLR_DQ(x)	(x)		/* DQ0-7 BDLR index */
 #define DXBDLR_DM	8		/* DM BDLR index */
 #define DXBDLR_DQS	9		/* DQS BDLR index */
@@ -205,6 +213,13 @@ struct sunxi_mctl_ctl_reg {
 
 #define DXBDLR_WRITE_DELAY(x)	((x) << 8)
 #define DXBDLR_READ_DELAY(x)	((x) << 0)
+
+#define PWRCTL_SELFREF_EN		(0x1 << 0)
+#define PWRCTL_PORT_DIS			(0x1 << 8)
+
+#define STATR_OP_MODE			(0x7 << 0)
+#define STATR_OP_MODE_NORMAL	(0x1 << 0)
+#define STATR_OP_MODE_SELFREF	(0x3 << 0)
 
 /*
  * The delay parameters below allow to allegedly specify delay times of some
