@@ -25,7 +25,7 @@
 
 #include <linux/bitops.h>
 
-#define USE_LOCKING_BEFORE_DDRFRQ	1
+#define USE_LOCKING_BEFORE_DDRFRQ	0
 
 #define __irq		__attribute__ ((interrupt ("IRQ")))
 
@@ -304,6 +304,10 @@ void __secure __irq psci_fiq_enter(void)
 	/* Get CPU number */
 	cpu = (reg >> 10) & 0x7;
 
+	/* End of interrupt */
+	writel(reg, GICC_BASE + GICC_EOIR);
+	dsb();
+
 	switch (irqn) {
 		case 14:
 			cpu_lock_state[psci_get_cpu_id()] = true;
@@ -315,16 +319,9 @@ void __secure __irq psci_fiq_enter(void)
 			dsb();
 			psci_v7_flush_dcache_all();
 			
-			/* End of interrupt */
-			writel(reg, GICC_BASE + GICC_EOIR);
-			dsb();
 		break;
 		
 		case 15:
-			/* End of interrupt */
-			writel(reg, GICC_BASE + GICC_EOIR);
-			dsb();
-
 			/* Power off the CPU */
 			sunxi_cpu_power_off(cpu);
 		break;
@@ -424,7 +421,7 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 	u32 rank_num, reg_val, cpu_mask = 0;
 	unsigned int i = 0;
 
-#ifdef USE_LOCKING_BEFORE_DDRFRQ
+#if USE_LOCKING_BEFORE_DDRFRQ
 	__gpio_debug(0);
 
 	cpu_lock_state[psci_get_cpu_id()] = true;
@@ -532,7 +529,7 @@ __gpio_debug(0b1000);
 __gpio_debug(0);
 		;
 	
-#ifdef USE_LOCKING_BEFORE_DDRFRQ
+#if USE_LOCKING_BEFORE_DDRFRQ
 	cpu_lock_state[psci_get_cpu_id()] = false;
 
 __gpio_debug(0b111);
