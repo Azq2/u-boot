@@ -182,6 +182,7 @@ struct sunxi_mctl_ctl_reg {
 #define RFSHTMG_TREFI(x)	((x) << 16)
 #define RFSHTMG_TRFC(x)		((x) <<  0)
 
+#define PIR_ZCALBYP	(0x1 << 30) /* Impedance Calibration Bypass */
 #define PIR_CLRSR	(0x1 << 27)	/* clear status registers */
 #define PIR_QSGATE	(0x1 << 10)	/* Read DQS gate training */
 #define PIR_DRAMINIT	(0x1 << 8)	/* DRAM initialization */

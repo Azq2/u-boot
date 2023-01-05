@@ -340,7 +340,7 @@ void __secure psci_arch_init(void)
 s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 				 u32 __always_unused freq, u32 flags)
 {
-	u32 dual_rank, tmp_reg, odtmap, dxodt, i;
+	u32 dual_rank, odtmap, dxodt, i;
 
 	struct sunxi_mctl_com_reg * const mctl_com =
 			(struct sunxi_mctl_com_reg *)SUNXI_DRAM_COM_BASE;
@@ -352,36 +352,29 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 	dual_rank = readl(&mctl_com->cr) & MCTL_CR_DUAL_RANK;
 	odtmap = dual_rank ? 0x00000303 : 0x00000201;
 
-	// 1. Enable self-refresh and disable DRAM port
-	tmp_reg = readl(&mctl_ctl->pwrctl);
-	tmp_reg |= PWRCTL_SELFREF_EN | PWRCTL_PORT_DIS;
-	psci_v7_flush_dcache_all(); // Make sure no DRAM access after PORT_DIS
-	writel(tmp_reg, &mctl_ctl->pwrctl);
+	/* 1. Enable self-refresh and disable DRAM port */
+	psci_v7_flush_dcache_all(); /* Make sure no DRAM access after PORT_DIS */
+	setbits_le32(&mctl_ctl->pwrctl, PWRCTL_SELFREF_EN | PWRCTL_PORT_DIS);
 	__udelay(1);
 
-	// 2. Make sure enter self-refresh
+	/* 2. Make sure enter self-refresh */
 	while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_SELFREF);
 
-	// 3. Update PLL setting and wait 1ms
-	tmp_reg = readl(&ccm->pll5_cfg);
-	tmp_reg |= CCM_PLL5_CTRL_UPD;
-	writel(tmp_reg, &ccm->pll5_cfg);
+	/* 3. Update PLL setting and wait PLL lock */
+	setbits_le32(&ccm->pll5_cfg, CCM_PLL5_CTRL_UPD);
 	__udelay(1000);
+	
+	/* 4. Set PIR register issue phy reset and DDL calibration */
+	clrsetbits_le32(&mctl_ctl->dtcr, (0x3 << 24), ((dual_rank ? 0x3 : 0x1) << 24));
 
-	// 4. Set PIR register issue phy reset and DDL calibration
-	tmp_reg = readl(&mctl_ctl->dtcr);
-	tmp_reg &= ~(0x3 << 24);
-	tmp_reg |= ((dual_rank ? 0x3 : 0x1) << 24);
-	writel(tmp_reg, &mctl_ctl->dtcr);
-
-	// 5. Trigger phy reset and DDL calibration
-	writel((1 << 30) | PIR_PHYRST | PIR_DCAL | PIR_INIT, &mctl_ctl->pir);
+	/* 5. Trigger phy reset and DDL calibration */
+	writel(PIR_ZCALBYP | PIR_PHYRST | PIR_DCAL | PIR_INIT, &mctl_ctl->pir);
 	__udelay(1);
 
-	// 6. Wait for DLL Lock
-	while ((readl(&mctl_ctl->pgsr[0]) & 0x1) != PGSR_INIT_DONE);
+	/* 6. Wait for DLL Lock */
+	while (!(readl(&mctl_ctl->pgsr[0]) & PGSR_INIT_DONE));
 
-	// 7. Turn ON or OFF ODT
+	/* 7. Turn ON or OFF ODT */
 	if ((flags & DRAM_DVFS_FLAG_ODT)) {
 		dxodt = DX_GCR_ODT_DYNAMIC;
 		writel(odtmap, &mctl_ctl->odtmap);
@@ -389,25 +382,21 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 		dxodt = DX_GCR_ODT_DISABLED;
 		writel(0, &mctl_ctl->odtmap);
 	}
-	for (i = 0; i < 4; i++) {
-		tmp_reg = readl(&mctl_ctl->dx[i].gcr) & ~DX_GCR_ODT_MASK;
-		tmp_reg |= dxodt;
-		writel(tmp_reg, &mctl_ctl->dx[i].gcr);
-	}
+	for (i = 0; i < 4; i++)
+		clrsetbits_le32(&mctl_ctl->dx[i].gcr, DX_GCR_ODT_MASK, dxodt);
 
-	// 8. Extif self-refresh (if not needed) and enable DRAM port
-	tmp_reg = readl(&mctl_ctl->pwrctl);
-	tmp_reg &= ~PWRCTL_PORT_DIS;
-	if (!(flags & DRAM_DVFS_FLAG_SELF_REFRESH))
-		tmp_reg &= ~PWRCTL_SELFREF_EN;
-	writel(tmp_reg, &mctl_ctl->pwrctl);
-	__udelay(1);
-
+	/* 8. Extif self-refresh (if not needed) and enable DRAM port */
 	if ((flags & DRAM_DVFS_FLAG_SELF_REFRESH)) {
-		// 9. Make sure still in self-refresh
+		clrbits_le32(&mctl_ctl->pwrctl, PWRCTL_PORT_DIS);
+		__udelay(1);
+		
+		/* 9. Make sure still in self-refresh */
 		while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_SELFREF);
 	} else {
-		// 9. Make sure exit self-refresh
+		clrbits_le32(&mctl_ctl->pwrctl, PWRCTL_PORT_DIS | PWRCTL_SELFREF_EN);
+		__udelay(1);
+		
+		/* 9. Make sure exit self-refresh */
 		while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_NORMAL);
 	}
 
