@@ -332,14 +332,19 @@ void __secure psci_arch_init(void)
 	cp15_write_scr(reg);
 }
 
-#define DRAM_DVFS_FLAG_ODT				BIT(0)
-#define DRAM_DVFS_FLAG_SELF_REFRESH		BIT(1)
-
 #if defined(CONFIG_MACH_SUN8I_H3)
+
+#define DRAM_DVFS_FLAG_ODT					BIT(0)
+#define DRAM_DVFS_FLAG_SELF_REFRESH			BIT(1)
+#define DRAM_DVFS_FLAG_ENABLE_LOCKING		BIT(8)
+#define DRAM_DVFS_FLAG_LOCK_CPU_IN_SRAM		BIT(9)
+#define DRAM_DVFS_FLAG_DISABLE_LOCKING		BIT(10)
+
 s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 				 u32 __always_unused freq, u32 flags)
 {
 	u32 dual_rank, odtmap, dxodt, i;
+	static volatile bool lock_secondary_cpus __secure_data = false;
 
 	struct sunxi_mctl_com_reg * const mctl_com =
 			(struct sunxi_mctl_com_reg *)SUNXI_DRAM_COM_BASE;
@@ -347,6 +352,29 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 			(struct sunxi_mctl_ctl_reg *)SUNXI_DRAM_CTL0_BASE;
 	struct sunxi_ccm_reg * const ccm =
 			(struct sunxi_ccm_reg *)SUNXI_CCM_BASE;
+
+	/* Enable locking */
+	if ((flags & DRAM_DVFS_FLAG_ENABLE_LOCKING)) {
+		lock_secondary_cpus = true;
+		psci_v7_flush_dcache_all();
+		return 0;
+	}
+
+	/* Lock core */
+	if ((flags & DRAM_DVFS_FLAG_LOCK_CPU_IN_SRAM)) {
+		psci_v7_flush_dcache_all();
+		while (lock_secondary_cpus) {
+			psci_v7_flush_dcache_all();
+		}
+		return 0;
+	}
+
+	/* Cancel locking */
+	if ((flags & DRAM_DVFS_FLAG_DISABLE_LOCKING)) {
+		lock_secondary_cpus = false;
+		psci_v7_flush_dcache_all();
+		return 0;
+	}
 
 	dual_rank = readl(&mctl_com->cr) & MCTL_CR_DUAL_RANK;
 	odtmap = dual_rank ? 0x00000303 : 0x00000201;
@@ -398,6 +426,10 @@ s32 __secure sunxi_dram_dvfs_req(u32 __always_unused function_id,
 		/* 9. Make sure exit self-refresh */
 		while ((readl(&mctl_ctl->statr) & STATR_OP_MODE) != STATR_OP_MODE_NORMAL);
 	}
+
+	/* Changing freq done, unlock CPU's */
+	lock_secondary_cpus = false;
+	psci_v7_flush_dcache_all();
 
 	return 0;
 }
